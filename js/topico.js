@@ -27,6 +27,36 @@ const NOTE_BLOCK_TYPES = ['resumo', 'ideia', 'exemplo', 'formula', 'duvida', 'er
 const GEMINI_NOTES_ENDPOINT = '/api/generate-video-notes'
 let selectedNoteId = null
 let selectedVideoId = null
+let currentNoteFilter = 'all'
+let notesFocusMode = false
+
+const NOTE_STATUS_META = {
+  ai_draft: {
+    label: 'IA pendente',
+    className: 'ai-draft',
+    icon: 'sparkles',
+  },
+  accepted: {
+    label: 'Revisado',
+    className: 'accepted',
+    icon: 'check-circle-2',
+  },
+  edited: {
+    label: 'Editado por você',
+    className: 'edited',
+    icon: 'pencil',
+  },
+  manual: {
+    label: 'Manual',
+    className: 'manual',
+    icon: 'user-pen',
+  },
+  archived: {
+    label: 'Arquivado',
+    className: 'archived',
+    icon: 'archive',
+  },
+}
 
 // Firebase e quiz gerenciados por firebase-init.js e quiz.js
 
@@ -354,13 +384,31 @@ function renderTopicoPage() {
   setNavActive()
   updateMasteryButtons()
   lucide.createIcons()
+  syncTopicoCardWorkspace()
 }
 
 function switchTopicoTab(name, btn) {
   document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('ativo'))
   document.querySelectorAll('.tab-panel').forEach(panel => panel.classList.remove('ativo'))
   btn.classList.add('ativo')
-  document.getElementById(`tab-${name}`).classList.add('ativo')
+  document.getElementById(`tab-${name}`)?.classList.add('ativo')
+  syncTopicoCardWorkspace(name)
+}
+
+function syncTopicoCardWorkspace(activeTabName = null) {
+  const card = document.querySelector('.topico-card')
+  const tabName = activeTabName || document.querySelector('.tab.ativo')?.dataset.tab || 'estudar'
+  const isWorkspaceTab = ['anotacoes', 'videos', 'questoes', 'revisoes', 'exportar'].includes(tabName)
+
+  if (card) card.classList.toggle('notes-expanded', tabName === 'anotacoes')
+  document.body.classList.toggle('topic-workspace-mode', isWorkspaceTab)
+  document.body.classList.toggle('topic-notes-mode', tabName === 'anotacoes')
+  syncNotesFocusMode(tabName)
+}
+
+function syncNotesFocusMode(activeTabName = null) {
+  const tabName = activeTabName || document.querySelector('.tab.ativo')?.dataset.tab || 'estudar'
+  document.body.classList.toggle('notes-immersive-mode', notesFocusMode && tabName === 'anotacoes')
 }
 
 function toggleTopicoDone() {
@@ -436,7 +484,7 @@ function renderExportTab() {
 function buildTopicoMarkdown() {
   const videos = getTopicoVideos()
   const questoes = getTopicoQuestoes()
-  const blocks = getNoteBlocks()
+  const blocks = getFinalNotebookBlocks()
   const state = getTopicRichState(topicoMateriaKey, topicoKeyId)
   const tempo = getTempo(topicoMateriaKey, topicoKeyId)
 
@@ -465,7 +513,7 @@ function buildTopicoMarkdown() {
   md += `- **Dominio:** ${state.mastery || 0}%\n`
   md += `- **Dificuldade:** ${state.difficulty || 'nao_avaliado'}\n\n`
 
-  md += `## Anotacoes\n\n`
+  md += `## Caderno final\n\n`
   if (blocks.length) {
     blocks.forEach(block => {
       const meta = getBlockMeta(block.type)
@@ -474,7 +522,7 @@ function buildTopicoMarkdown() {
       md += `${block.content || 'Sem conteudo.'}\n\n`
     })
   } else {
-    md += `Sem anotacoes ainda.\n\n`
+    md += `Sem anotacoes revisadas ainda.\n\n`
   }
 
   if (videos.length) {
@@ -825,7 +873,7 @@ function importFromObsidian() {
 function buildTopicoMarkdown() {
   const videos = getTopicoVideos()
   const questoes = getTopicoQuestoes()
-  const anotacao = getTopicoAnotacao()
+  const finalBlocks = getFinalNotebookBlocks()
   const tempo = getTempo(topicoMateriaKey, topicoKeyId)
 
   let md = `---\n`
@@ -837,7 +885,8 @@ function buildTopicoMarkdown() {
   md += `tempo_estudado: "${formatTempo(tempo)}"\n`
   md += `---\n\n`
   md += `# ${getTopicoTitulo()}\n\n`
-  md += `## Anotações\n\n${anotacao || 'Sem anotações ainda.'}\n\n`
+  md += `## Caderno final\n\n`
+  md += finalBlocks.length ? `${blocksToMarkdown(finalBlocks)}\n\n` : `Sem anotações revisadas ainda.\n\n`
 
   if (videos.length) {
     md += `## Vídeos\n\n`
@@ -1329,6 +1378,7 @@ function renderTopicoPage() {
   setNavActive()
   updateMasteryButtons()
   lucide.createIcons()
+  syncTopicoCardWorkspace()
 }
 
 function renderMasteryMeter(value) {
@@ -1544,8 +1594,74 @@ function saveNoteBlocks(blocks) {
     mastery: Math.max(currentState.mastery || 0, hasMeaningfulNote ? 25 : 0),
   })
   store.set(getNoteBlocksKey(), normalized)
-  saveTopicoAnotacao(blocksToMarkdown(normalized))
+  saveTopicoAnotacao(blocksToMarkdown(getFinalNotebookBlocks(normalized)))
   refreshTopicLearningUI()
+}
+
+function inferNoteOrigin(block) {
+  if (['ai', 'manual', 'imported'].includes(block.origin)) return block.origin
+  if (String(block.title || '').toLowerCase().includes('ia')) return 'ai'
+  return 'manual'
+}
+
+function normalizeNoteStatus(block, origin) {
+  const valid = ['ai_draft', 'accepted', 'edited', 'manual', 'archived']
+  if (valid.includes(block.status)) return block.status
+  if (origin === 'ai') return 'ai_draft'
+  if (origin === 'imported') return 'accepted'
+  return 'manual'
+}
+
+function getNoteStatusMeta(block) {
+  return NOTE_STATUS_META[block.status] || NOTE_STATUS_META.manual
+}
+
+function isAiDraft(block) {
+  return block.origin === 'ai' && block.status === 'ai_draft'
+}
+
+function isFinalNotebookBlock(block) {
+  return block.status !== 'archived' && ['manual', 'accepted', 'edited'].includes(block.status)
+}
+
+function getFinalNotebookBlocks(blocks = getNoteBlocks()) {
+  return sortNoteBlocks(blocks.filter(isFinalNotebookBlock))
+}
+
+function sortNoteBlocks(blocks) {
+  return [...blocks].sort((a, b) => {
+    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1
+    if (a.status === 'ai_draft' && b.status !== 'ai_draft') return -1
+    if (b.status === 'ai_draft' && a.status !== 'ai_draft') return 1
+    return new Date(b.updatedAt || b.createdAt || 0) - new Date(a.updatedAt || a.createdAt || 0)
+  })
+}
+
+function getFilteredNoteBlocks(blocks) {
+  const archived = blocks.filter(block => block.status === 'archived')
+  const visible = blocks.filter(block => block.status !== 'archived')
+  const sorted = sortNoteBlocks(visible)
+
+  if (currentNoteFilter === 'all') return sorted
+  if (currentNoteFilter === 'drafts') return sorted.filter(block => block.status === 'ai_draft')
+  if (currentNoteFilter === 'mine') return sorted.filter(block => isFinalNotebookBlock(block))
+  if (currentNoteFilter === 'reviewed') return sorted.filter(block => ['accepted', 'edited'].includes(block.status))
+  if (currentNoteFilter === 'pinned') return sorted.filter(block => block.pinned)
+  if (currentNoteFilter === 'archived') return sortNoteBlocks(archived)
+  if (currentNoteFilter === 'final') return getFinalNotebookBlocks(blocks)
+  return sorted
+}
+
+function setNoteFilter(filter) {
+  currentNoteFilter = filter
+  selectedNoteId = null
+  renderNoteBlocks()
+}
+
+function toggleNotesFocusMode() {
+  notesFocusMode = !notesFocusMode
+  syncNotesFocusMode()
+  renderNoteBlocks()
 }
 
 function normalizeNoteBlocks(blocks) {
@@ -1554,12 +1670,22 @@ function normalizeNoteBlocks(blocks) {
     .map(block => {
       const type = TOPIC_NOTE_TYPE_META[block.type] ? block.type : 'texto'
       const meta = TOPIC_NOTE_TYPE_META[type]
+      const origin = inferNoteOrigin(block)
+      const status = normalizeNoteStatus(block, origin)
+
       return {
         id: String(block.id || createNoteBlockId()),
         type,
         title: String(block.title || meta.label),
         content: String(block.content || ''),
+        origin,
+        status,
+        pinned: !!block.pinned,
+        batchId: block.batchId || null,
+        tags: Array.isArray(block.tags) ? block.tags.map(String) : [],
         source: block.source && typeof block.source === 'object' ? block.source : null,
+        aiMeta: block.aiMeta && typeof block.aiMeta === 'object' ? block.aiMeta : null,
+        reviewedAt: block.reviewedAt || null,
         createdAt: block.createdAt || new Date().toISOString(),
         updatedAt: block.updatedAt || new Date().toISOString(),
       }
@@ -1579,17 +1705,27 @@ function isNoteBlockEmpty(block) {
 
 function addNoteBlock(type) {
   const meta = getBlockMeta(type)
+  const now = new Date().toISOString()
   const block = {
     id: createNoteBlockId(),
     type: TOPIC_NOTE_TYPE_META[type] ? type : 'texto',
     title: meta.title,
     content: meta.template,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
+    origin: 'manual',
+    status: 'manual',
+    pinned: false,
+    batchId: null,
+    tags: [],
+    source: null,
+    aiMeta: null,
+    reviewedAt: now,
+    createdAt: now,
+    updatedAt: now,
   }
 
   saveNoteBlocks([block, ...getNoteBlocks()])
   selectedNoteId = block.id
+  currentNoteFilter = 'all'
   renderNoteBlocks()
   renderStudyTab()
   markTopicoSaved()
@@ -1608,6 +1744,84 @@ function selectNoteBlock(id) {
   renderNoteBlocks()
 }
 
+function patchNoteBlock(id, patch) {
+  const blocks = getNoteBlocks().map(block => {
+    if (block.id !== id) return block
+    return {
+      ...block,
+      ...patch,
+      updatedAt: new Date().toISOString(),
+    }
+  })
+
+  saveNoteBlocks(blocks)
+  renderNoteBlocks()
+  renderStudyTab()
+  markTopicoSaved()
+}
+
+function acceptNoteBlock(id) {
+  patchNoteBlock(id, {
+    status: 'accepted',
+    reviewedAt: new Date().toISOString(),
+  })
+}
+
+function archiveNoteBlock(id) {
+  selectedNoteId = null
+  patchNoteBlock(id, { status: 'archived' })
+}
+
+function restoreNoteBlock(id) {
+  const block = getNoteBlocks().find(item => item.id === id)
+  if (!block) return
+  patchNoteBlock(id, {
+    status: block.origin === 'ai' ? 'accepted' : 'manual',
+    reviewedAt: block.reviewedAt || new Date().toISOString(),
+  })
+}
+
+function togglePinNoteBlock(id) {
+  const block = getNoteBlocks().find(item => item.id === id)
+  if (!block) return
+  patchNoteBlock(id, { pinned: !block.pinned })
+}
+
+function acceptAllAiDrafts() {
+  const now = new Date().toISOString()
+  const blocks = getNoteBlocks().map(block => {
+    if (block.status !== 'ai_draft') return block
+    return {
+      ...block,
+      status: 'accepted',
+      reviewedAt: block.reviewedAt || now,
+      updatedAt: now,
+    }
+  })
+
+  saveNoteBlocks(blocks)
+  currentNoteFilter = 'mine'
+  selectedNoteId = null
+  renderNoteBlocks()
+  renderStudyTab()
+  markTopicoSaved('IA aceita')
+}
+
+function archiveAllAiDrafts() {
+  if (!confirm('Arquivar todos os blocos pendentes da IA?')) return
+  const now = new Date().toISOString()
+  const blocks = getNoteBlocks().map(block => {
+    if (block.status !== 'ai_draft') return block
+    return { ...block, status: 'archived', updatedAt: now }
+  })
+
+  saveNoteBlocks(blocks)
+  selectedNoteId = null
+  renderNoteBlocks()
+  renderStudyTab()
+  markTopicoSaved('IA arquivada')
+}
+
 function updateNoteBlock(id, patchOrContent) {
   const patch = typeof patchOrContent === 'object'
     ? patchOrContent
@@ -1615,7 +1829,23 @@ function updateNoteBlock(id, patchOrContent) {
 
   const blocks = getNoteBlocks().map(block => {
     if (block.id !== id) return block
-    return { ...block, ...patch, updatedAt: new Date().toISOString() }
+
+    const userChangedContent =
+      Object.prototype.hasOwnProperty.call(patch, 'content') ||
+      Object.prototype.hasOwnProperty.call(patch, 'title')
+
+    const nextStatus =
+      block.origin === 'ai' && block.status === 'ai_draft' && userChangedContent
+        ? 'edited'
+        : block.status
+
+    return {
+      ...block,
+      ...patch,
+      status: nextStatus,
+      reviewedAt: nextStatus === 'edited' ? (block.reviewedAt || new Date().toISOString()) : block.reviewedAt,
+      updatedAt: new Date().toISOString(),
+    }
   })
 
   saveNoteBlocks(blocks)
@@ -1712,6 +1942,319 @@ function renderNoteBlocks() {
     <div class="save-status" id="save-status-topico" style="margin-top:8px;"></div>
   `
   lucide.createIcons()
+}
+
+function renderNoteBlocks() {
+  const container = document.getElementById('tab-anotacoes')
+  if (!container) return
+
+  const allBlocks = getNoteBlocks()
+  const blocks = getFilteredNoteBlocks(allBlocks)
+  const aiDraftCount = allBlocks.filter(block => block.status === 'ai_draft').length
+  const finalCount = getFinalNotebookBlocks(allBlocks).length
+  const reviewedCount = allBlocks.filter(block => ['accepted', 'edited'].includes(block.status)).length
+  const pinnedCount = allBlocks.filter(block => block.pinned && block.status !== 'archived').length
+  const archivedCount = allBlocks.filter(block => block.status === 'archived').length
+  const filterDefs = [
+    ['all', 'Todos', allBlocks.filter(block => block.status !== 'archived').length],
+    ['drafts', 'Caixa IA', aiDraftCount],
+    ['mine', 'Meu caderno', finalCount],
+    pinnedCount ? ['pinned', 'Fixados', pinnedCount] : null,
+    ['final', 'Final', finalCount],
+    reviewedCount && currentNoteFilter === 'reviewed' ? ['reviewed', 'Revisados', reviewedCount] : null,
+    archivedCount ? ['archived', 'Arquivados', archivedCount] : null,
+  ].filter(Boolean)
+
+  if (currentNoteFilter === 'final') {
+    selectedNoteId = null
+  } else if (!selectedNoteId && blocks.length) {
+    selectedNoteId = blocks[0].id
+  }
+
+  const selected = blocks.find(block => block.id === selectedNoteId)
+
+  container.innerHTML = `
+    <section class="notes-workspace notes-workspace-smart ${notesFocusMode ? 'notes-focus-mode' : ''}">
+      <aside class="notes-sidebar">
+        <div class="notes-sidebar-head">
+          <div>
+            <p class="note-kicker">Caderno inteligente</p>
+            <h3>Anotações</h3>
+          </div>
+          ${aiDraftCount ? `
+            <span class="note-inbox-pill">
+              <i data-lucide="sparkles"></i>
+              ${aiDraftCount} IA
+            </span>
+          ` : ''}
+        </div>
+
+        <div class="note-filter-row">
+          ${filterDefs.map(([value, label, count]) => `
+            <button class="note-filter-chip ${currentNoteFilter === value ? 'active' : ''}" onclick="setNoteFilter('${value}')">
+              ${label}
+              <span>${count}</span>
+            </button>
+          `).join('')}
+          <button class="note-filter-chip note-focus-chip ${notesFocusMode ? 'active' : ''}" onclick="toggleNotesFocusMode()">
+            <i data-lucide="${notesFocusMode ? 'panel-left-open' : 'maximize-2'}"></i>
+            ${notesFocusMode ? 'Ver lista' : 'Modo foco'}
+          </button>
+        </div>
+
+        ${currentNoteFilter === 'drafts' && aiDraftCount ? `
+          <div class="note-inbox-actions">
+            <button class="btn btn-sm btn-accent" onclick="acceptAllAiDrafts()">Aceitar IA</button>
+            <button class="btn btn-sm" onclick="archiveAllAiDrafts()">Arquivar IA</button>
+          </div>
+        ` : ''}
+
+        <details class="note-create-box">
+          <summary>
+            <i data-lucide="plus"></i>
+            Novo bloco
+          </summary>
+
+          <div class="notes-actions compact">
+            ${Object.entries(TOPIC_NOTE_TYPE_META).map(([type, meta]) => `
+              <button class="note-type-btn" onclick="addNoteBlock('${type}')">
+                <i data-lucide="${meta.icon}" style="width:13px;height:13px;"></i>
+                ${meta.label}
+              </button>
+            `).join('')}
+          </div>
+        </details>
+
+        <div class="notes-list">
+          ${blocks.length ? blocks.map(block => {
+            const meta = getBlockMeta(block.type)
+            const statusMeta = getNoteStatusMeta(block)
+            return `
+              <button
+                class="note-list-item note-origin-${block.origin} note-status-${block.status} ${block.id === selectedNoteId ? 'active' : ''} ${isNoteBlockEmpty(block) ? 'empty' : ''}"
+                onclick="selectNoteBlock('${escapeJsString(block.id)}')"
+              >
+                <div class="note-list-top">
+                  <strong>
+                    <i data-lucide="${meta.icon}" style="width:12px;height:12px;"></i>
+                    ${escapeHtml(block.title || meta.title)}
+                  </strong>
+                  ${block.pinned ? `<i data-lucide="pin" class="note-mini-icon"></i>` : ''}
+                </div>
+                <small>${escapeHtml(getPreview(block.content))}</small>
+                ${block.source ? `<small>${escapeHtml(formatNoteSource(block.source))}</small>` : ''}
+                <div class="note-card-meta">
+                  <span class="note-status-badge ${statusMeta.className}">
+                    <i data-lucide="${statusMeta.icon}"></i>
+                    ${statusMeta.label}
+                  </span>
+                </div>
+              </button>
+            `
+          }).join('') : `
+            <div class="note-empty-state">
+              <strong>Nenhuma anotação nesse filtro.</strong>
+              Crie um bloco manual ou gere um caderno IA pelo vídeo.
+            </div>
+          `}
+        </div>
+      </aside>
+
+      <main class="note-editor-panel">
+        ${currentNoteFilter === 'final' ? renderFinalNotebook(allBlocks) : selected ? renderSelectedNoteEditor(selected) : `
+          <div class="empty-editor empty-editor-stack">
+            <span>Escolha ou crie um bloco de anotação.</span>
+            ${notesFocusMode ? `
+              <button class="btn btn-sm" onclick="toggleNotesFocusMode()">
+                <i data-lucide="panel-left-open" style="width:13px;height:13px;"></i>
+                Mostrar lista
+              </button>
+            ` : ''}
+          </div>
+        `}
+      </main>
+    </section>
+    <div class="save-status" id="save-status-topico" style="margin-top:8px;"></div>
+  `
+  lucide.createIcons()
+}
+
+function renderSelectedNoteEditor(selected) {
+  const statusMeta = getNoteStatusMeta(selected)
+  const sourceText = selected.source ? formatNoteSource(selected.source) : 'Criado manualmente'
+
+  return `
+    <div class="note-editor-header note-editor-header-smart">
+      <div class="note-editor-mainline">
+        <div class="note-editor-title-block">
+          <input
+            class="note-title-input note-title-input-large"
+            value="${escapeHtmlForAttr(selected.title)}"
+            oninput="updateNoteBlock('${escapeJsString(selected.id)}', { title: this.value })"
+          />
+
+          <div class="note-editor-meta">
+            <span class="note-status-badge ${statusMeta.className}">
+              <i data-lucide="${statusMeta.icon}"></i>
+              ${statusMeta.label}
+            </span>
+            <span class="note-origin-text">${escapeHtml(sourceText)}</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="note-editor-actions note-editor-actions-row">
+        ${isAiDraft(selected) ? `
+          <button class="btn btn-sm btn-accent" onclick="acceptNoteBlock('${escapeJsString(selected.id)}')">
+            Aceitar no caderno
+          </button>
+        ` : ''}
+
+        <button class="btn btn-sm" onclick="toggleNotesFocusMode()">
+          <i data-lucide="${notesFocusMode ? 'panel-left-open' : 'maximize-2'}" style="width:13px;height:13px;"></i>
+          ${notesFocusMode ? 'Mostrar lista' : 'Modo foco'}
+        </button>
+
+        <details class="note-more-actions">
+          <summary class="btn btn-sm note-more-trigger" title="Mais ações">
+            <i data-lucide="more-horizontal" style="width:14px;height:14px;"></i>
+          </summary>
+          <div class="note-more-menu">
+            ${selected.status === 'archived' ? `
+              <button class="btn btn-sm btn-accent" onclick="restoreNoteBlock('${escapeJsString(selected.id)}')">
+                Restaurar
+              </button>
+            ` : `
+              <button class="btn btn-sm" onclick="togglePinNoteBlock('${escapeJsString(selected.id)}')">
+                <i data-lucide="${selected.pinned ? 'pin-off' : 'pin'}" style="width:13px;height:13px;"></i>
+                ${selected.pinned ? 'Desfixar' : 'Fixar'}
+              </button>
+              <button class="btn btn-sm" onclick="makeReviewFromNote('${escapeJsString(selected.id)}')">Virar revisão</button>
+              <button class="btn btn-sm" onclick="archiveNoteBlock('${escapeJsString(selected.id)}')">Arquivar</button>
+            `}
+            <button class="btn btn-sm" onclick="removeNoteBlock('${escapeJsString(selected.id)}')">Excluir</button>
+          </div>
+        </details>
+      </div>
+    </div>
+
+    ${selected.status === 'ai_draft' ? `
+      <div class="note-ai-review-banner">
+        <i data-lucide="sparkles"></i>
+        <strong>IA pendente</strong>
+        <span>Revise antes de aceitar no caderno.</span>
+      </div>
+    ` : ''}
+
+    <textarea
+      class="note-content-textarea"
+      oninput="updateNoteBlock('${escapeJsString(selected.id)}', { content: this.value })"
+    >${escapeHtmlForTextarea(selected.content)}</textarea>
+  `
+}
+
+function renderFinalNotebook(allBlocks) {
+  const blocks = getFinalNotebookBlocks(allBlocks)
+  const markdown = buildFinalNotebookMarkdown(blocks)
+
+  return `
+    <section class="final-notebook">
+      <div class="final-notebook-head">
+        <div>
+          <p class="note-kicker">Caderno final</p>
+          <h3>${escapeHtml(getTopicoTitulo())}</h3>
+          <p>Somente blocos manuais, aceitos ou editados entram aqui.</p>
+        </div>
+        <div class="note-editor-actions">
+          <button class="btn btn-sm" onclick="toggleNotesFocusMode()">
+            <i data-lucide="${notesFocusMode ? 'panel-left-open' : 'maximize-2'}" style="width:13px;height:13px;"></i>
+            ${notesFocusMode ? 'Mostrar lista' : 'Modo foco'}
+          </button>
+          <button class="btn btn-sm" onclick="copyFinalNotebook()">
+            <i data-lucide="copy" style="width:13px;height:13px;"></i>
+            Copiar
+          </button>
+          <button class="btn btn-sm btn-accent" onclick="exportFinalNotebook()">
+            <i data-lucide="download" style="width:13px;height:13px;"></i>
+            Baixar .md
+          </button>
+        </div>
+      </div>
+
+      ${blocks.length ? `
+        <div class="final-notebook-preview">
+          ${blocks.map(block => {
+            const meta = getBlockMeta(block.type)
+            return `
+              <article class="final-note-block">
+                <h4><i data-lucide="${meta.icon}"></i>${escapeHtml(block.title || meta.title)}</h4>
+                <div>${escapeHtml(block.content || '').replace(/\n/g, '<br>')}</div>
+              </article>
+            `
+          }).join('')}
+        </div>
+        <textarea class="final-notebook-raw" readonly>${escapeHtmlForTextarea(markdown)}</textarea>
+      ` : `
+        <div class="empty-editor">Aceite blocos da IA ou crie anotações manuais para montar o caderno final.</div>
+      `}
+    </section>
+  `
+}
+
+function buildFinalNotebookMarkdown(blocks = getFinalNotebookBlocks()) {
+  let md = `# ${getTopicoTitulo()}\n\n`
+  md += `> ${topicoMateria.nome} - ${conteudo.nome} - ${habilidade.id}\n\n`
+
+  if (!blocks.length) {
+    md += 'Sem blocos revisados no caderno final.\n'
+    return md
+  }
+
+  blocks.forEach(block => {
+    const meta = getBlockMeta(block.type)
+    md += `## ${block.title || meta.title}\n\n`
+    md += `${block.content || 'Sem conteúdo.'}\n\n`
+  })
+
+  return md.trim() + '\n'
+}
+
+async function copyFinalNotebook() {
+  const markdown = buildFinalNotebookMarkdown()
+
+  try {
+    if (!navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') {
+      throw new Error('Clipboard API indisponivel')
+    }
+    await navigator.clipboard.writeText(markdown)
+    markTopicoSaved('caderno copiado')
+  } catch {
+    const textarea = document.createElement('textarea')
+    textarea.value = markdown
+    textarea.style.position = 'fixed'
+    textarea.style.left = '-9999px'
+    document.body.appendChild(textarea)
+    textarea.select()
+
+    try {
+      document.execCommand('copy')
+      markTopicoSaved('caderno copiado')
+    } finally {
+      textarea.remove()
+    }
+  }
+}
+
+function exportFinalNotebook() {
+  const markdown = buildFinalNotebookMarkdown()
+  const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${sanitizeFileName(getTopicoTitulo())}-caderno-final.md`
+  a.click()
+  URL.revokeObjectURL(url)
+  markTopicoSaved('caderno exportado')
 }
 
 function getPreview(text = '') {
@@ -1829,19 +2372,27 @@ function saveVideoQuickNote(type) {
 
   const selectedVideo = getTopicoVideos().find(video => video.id === selectedVideoId)
   const meta = getBlockMeta(type)
+  const now = new Date().toISOString()
   const block = {
     id: createNoteBlockId(),
     type,
     title: type === 'texto' ? 'Anotação do vídeo' : `${meta.title} do vídeo`,
     content,
+    origin: 'manual',
+    status: 'manual',
+    pinned: false,
+    batchId: null,
+    tags: [],
     source: selectedVideo ? {
       type: 'video',
       videoId: selectedVideo.id,
       youtubeId: selectedVideo.videoId,
       videoTitle: selectedVideo.title || 'Vídeo salvo',
     } : null,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
+    aiMeta: null,
+    reviewedAt: now,
+    createdAt: now,
+    updatedAt: now,
   }
 
   saveNoteBlocks([block, ...getNoteBlocks()])
@@ -1887,6 +2438,7 @@ async function generateVideoStudyNotes(videoLocalId) {
 
     saveNoteBlocks([...blocks, ...getNoteBlocks()])
     selectedNoteId = blocks[0].id
+    currentNoteFilter = 'drafts'
     renderNoteBlocks()
     renderStudyTab()
     markTopicoSaved('caderno IA criado')
@@ -1938,6 +2490,8 @@ async function requestGeminiStudyNotes(extraContext, video) {
 }
 
 function createAiNoteBlocks(aiNotes, video) {
+  const batchId = createTopicEntityId('ai_batch')
+  const generatedAt = new Date().toISOString()
   const source = video ? {
     type: 'video',
     videoId: video.id,
@@ -1963,9 +2517,20 @@ function createAiNoteBlocks(aiNotes, video) {
       type,
       title,
       content,
+      origin: 'ai',
+      status: 'ai_draft',
+      pinned: false,
+      batchId,
+      tags: [],
       source,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      aiMeta: {
+        generatedAt,
+        provider: 'gemini',
+        kind: 'video_notes',
+      },
+      reviewedAt: null,
+      createdAt: generatedAt,
+      updatedAt: generatedAt,
     }))
 }
 
@@ -2246,7 +2811,7 @@ function buildTopicoMarkdown() {
   const videos = getTopicoVideos()
   const questoes = getTopicoQuestoes()
   const state = getTopicRichState(topicoMateriaKey, topicoKeyId)
-  const anotacao = getTopicoAnotacao()
+  const finalBlocks = getFinalNotebookBlocks()
   const tempo = getTempo(topicoMateriaKey, topicoKeyId)
 
   let md = `---\n`
@@ -2260,7 +2825,8 @@ function buildTopicoMarkdown() {
   md += `dificuldade: "${state.difficulty || 'nao_avaliado'}"\n`
   md += `---\n\n`
   md += `# ${getTopicoTitulo()}\n\n`
-  md += `## Resumo e anotações\n\n${anotacao || 'Sem anotações ainda.'}\n\n`
+  md += `## Caderno final\n\n`
+  md += finalBlocks.length ? `${blocksToMarkdown(finalBlocks)}\n\n` : `Sem anotações revisadas ainda.\n\n`
 
   if (videos.length) {
     md += `## Vídeos salvos\n\n`
@@ -2378,7 +2944,7 @@ function renderExportTab() {
 function buildTopicoMarkdown() {
   const videos = getTopicoVideos()
   const questoes = getTopicoQuestoes()
-  const blocks = getNoteBlocks()
+  const blocks = getFinalNotebookBlocks()
   const state = getTopicRichState(topicoMateriaKey, topicoKeyId)
   const tempo = getTempo(topicoMateriaKey, topicoKeyId)
 
@@ -2407,7 +2973,7 @@ function buildTopicoMarkdown() {
   md += `- **Dominio:** ${state.mastery || 0}%\n`
   md += `- **Dificuldade:** ${state.difficulty || 'nao_avaliado'}\n\n`
 
-  md += `## Anotacoes\n\n`
+  md += `## Caderno final\n\n`
   if (blocks.length) {
     blocks.forEach(block => {
       const meta = getBlockMeta(block.type)
@@ -2416,7 +2982,7 @@ function buildTopicoMarkdown() {
       md += `${block.content || 'Sem conteudo.'}\n\n`
     })
   } else {
-    md += `Sem anotacoes ainda.\n\n`
+    md += `Sem anotacoes revisadas ainda.\n\n`
   }
 
   if (videos.length) {

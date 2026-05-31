@@ -1,11 +1,19 @@
 const { onRequest } = require('firebase-functions/v2/https')
 
 const DEFAULT_MODEL = 'gemini-2.5-flash'
+const ALLOWED_ORIGINS = [
+  'https://enem-study.web.app',
+  'https://enem-study.firebaseapp.com',
+  'http://localhost:5000',
+  'http://127.0.0.1:5000',
+  'http://localhost:5500',
+  'http://127.0.0.1:5500',
+]
 
 exports.generateVideoNotes = onRequest(
   {
     region: 'us-central1',
-    cors: true,
+    cors: ALLOWED_ORIGINS,
     timeoutSeconds: 120,
     memory: '512MiB',
   },
