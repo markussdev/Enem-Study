@@ -37,10 +37,13 @@ const UI_LABELS = {
   },
   noteType: {
     resumo: 'Resumo',
+    ideia: 'Ideia central',
     exemplo: 'Exemplo',
     formula: 'Fórmula / regra',
     duvida: 'Dúvida',
     erro: 'Erro',
+    atencao: 'Ponto de atenção',
+    enem: 'Como cai no ENEM',
     texto: 'Texto solto',
   },
 }
@@ -54,6 +57,11 @@ const TOPIC_NOTE_TYPE_META = {
     label: label('noteType', 'resumo'),
     icon: 'book-open',
     template: '- Ideia principal:\n- Como aparece no ENEM:\n- Palavra-chave:',
+  },
+  ideia: {
+    label: label('noteType', 'ideia'),
+    icon: 'target',
+    template: 'Ideia principal:\n\nPor que isso importa:',
   },
   exemplo: {
     label: label('noteType', 'exemplo'),
@@ -74,6 +82,16 @@ const TOPIC_NOTE_TYPE_META = {
     label: label('noteType', 'erro'),
     icon: 'triangle-alert',
     template: 'O que errei:\n\nPor que errei:\n\nComo evitar:',
+  },
+  atencao: {
+    label: label('noteType', 'atencao'),
+    icon: 'badge-alert',
+    template: 'Atenção:\n\nPor que isso confunde:',
+  },
+  enem: {
+    label: label('noteType', 'enem'),
+    icon: 'graduation-cap',
+    template: 'Como costuma aparecer:\n\nTipo de questão provável:',
   },
   texto: {
     label: label('noteType', 'texto'),
@@ -229,6 +247,9 @@ function generateReviewQuestion(note) {
   if (note.type === 'formula') return 'Você lembra quando usar esta fórmula ou regra?'
   if (note.type === 'erro') return 'Você lembra qual erro cometeu e como evitar?'
   if (note.type === 'resumo') return 'Você consegue explicar a ideia principal deste resumo?'
+  if (note.type === 'ideia') return 'Você consegue explicar a ideia central com suas palavras?'
+  if (note.type === 'atencao') return 'Você lembra qual ponto de atenção pode causar confusão?'
+  if (note.type === 'enem') return 'Você lembra como esse conteúdo costuma aparecer no ENEM?'
   return 'Revise esta anotação.'
 }
 

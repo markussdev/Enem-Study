@@ -23,7 +23,8 @@ const TOPICO_SK = {
   vault: 'obsidian_vault',
 }
 
-const NOTE_BLOCK_TYPES = ['resumo', 'exemplo', 'formula', 'duvida', 'erro', 'texto']
+const NOTE_BLOCK_TYPES = ['resumo', 'ideia', 'exemplo', 'formula', 'duvida', 'erro', 'atencao', 'enem', 'texto']
+const GEMINI_NOTES_ENDPOINT = '/api/generate-video-notes'
 let selectedNoteId = null
 let selectedVideoId = null
 
@@ -1772,16 +1773,32 @@ function renderTopicoVideos() {
         <main class="video-player-card">
           <iframe src="https://www.youtube.com/embed/${selected.videoId}" allowfullscreen></iframe>
         </main>
-        <aside class="quick-video-notes">
-          <p class="note-kicker">Anotação rápida</p>
-          <h3>Enquanto assiste</h3>
-          <textarea id="quick-video-note" placeholder="Ex: não entendi a diferença entre escala gráfica e numérica..."></textarea>
-          <div class="quick-actions-grid">
-            <button class="btn btn-sm" onclick="saveVideoQuickNote('resumo')">Salvar como resumo</button>
-            <button class="btn btn-sm" onclick="saveVideoQuickNote('duvida')">Salvar como dúvida</button>
-            <button class="btn btn-sm" onclick="saveVideoQuickNote('erro')">Salvar como erro</button>
-            <button class="btn btn-sm" onclick="saveVideoQuickNote('texto')">Salvar como anotação solta</button>
-          </div>
+        <aside class="video-side-stack">
+          <section class="ai-video-notes">
+            <p class="note-kicker">Caderno IA</p>
+            <h3>Resumir vídeo automaticamente</h3>
+            <p class="ai-video-copy">A IA analisa o link salvo do YouTube e cria blocos editáveis com resumo, ideia central, dúvidas, fórmulas e pontos de atenção.</p>
+            <textarea id="ai-video-extra-context" placeholder="Opcional: cole aqui uma orientação extra, trecho de legenda ou ponto que você quer priorizar..."></textarea>
+            <div class="quick-actions-grid">
+              <button class="btn btn-accent btn-sm" id="ai-generate-btn" onclick="generateVideoStudyNotes('${escapeJsString(selected.id)}')">
+                <i data-lucide="sparkles" style="width:13px;height:13px;"></i>
+                Resumir vídeo com IA
+              </button>
+            </div>
+            <div class="ai-notes-status" id="ai-notes-status"></div>
+          </section>
+
+          <section class="quick-video-notes">
+            <p class="note-kicker">Anotação rápida</p>
+            <h3>Enquanto assiste</h3>
+            <textarea id="quick-video-note" placeholder="Ex: não entendi a diferença entre escala gráfica e numérica..."></textarea>
+            <div class="quick-actions-grid">
+              <button class="btn btn-sm" onclick="saveVideoQuickNote('resumo')">Salvar como resumo</button>
+              <button class="btn btn-sm" onclick="saveVideoQuickNote('duvida')">Salvar como dúvida</button>
+              <button class="btn btn-sm" onclick="saveVideoQuickNote('erro')">Salvar como erro</button>
+              <button class="btn btn-sm" onclick="saveVideoQuickNote('texto')">Salvar como anotação solta</button>
+            </div>
+          </section>
         </aside>
       </section>
     ` : `
@@ -1833,6 +1850,137 @@ function saveVideoQuickNote(type) {
   markTopicoSaved('anotação criada')
   renderNoteBlocks()
   refreshTopicLearningUI()
+}
+
+function setAiNotesStatus(message, type = '') {
+  const status = document.getElementById('ai-notes-status')
+  if (!status) return
+  status.textContent = message
+  status.className = `ai-notes-status ${type}`.trim()
+}
+
+async function generateVideoStudyNotes(videoLocalId) {
+  const extraContext = document.getElementById('ai-video-extra-context')?.value.trim()
+  const button = document.getElementById('ai-generate-btn')
+  const selectedVideo = getTopicoVideos().find(video => video.id === videoLocalId)
+
+  if (!selectedVideo?.url) {
+    setAiNotesStatus('Salve ou selecione um vídeo antes de gerar o caderno IA.', 'error')
+    return
+  }
+
+  if (button) {
+    button.disabled = true
+    button.innerHTML = '<i data-lucide="loader-circle" style="width:13px;height:13px;"></i> Gerando...'
+    lucide.createIcons()
+  }
+  setAiNotesStatus('Analisando o vídeo do YouTube e montando blocos úteis...')
+
+  try {
+    const aiNotes = await requestGeminiStudyNotes(extraContext, selectedVideo)
+    const blocks = createAiNoteBlocks(aiNotes, selectedVideo)
+
+    if (!blocks.length) {
+      setAiNotesStatus('A IA não devolveu blocos aproveitáveis. Tente outro vídeo público ou adicione contexto opcional.', 'error')
+      return
+    }
+
+    saveNoteBlocks([...blocks, ...getNoteBlocks()])
+    selectedNoteId = blocks[0].id
+    renderNoteBlocks()
+    renderStudyTab()
+    markTopicoSaved('caderno IA criado')
+    setAiNotesStatus(`${blocks.length} blocos criados nas anotações.`, 'success')
+  } catch (err) {
+    console.error('Erro ao gerar caderno IA:', err)
+    setAiNotesStatus(err.message || 'Erro ao chamar Gemini. Confira a chave e tente de novo.', 'error')
+  } finally {
+    if (button) {
+      button.disabled = false
+      button.innerHTML = '<i data-lucide="sparkles" style="width:13px;height:13px;"></i> Resumir vídeo com IA'
+      lucide.createIcons()
+    }
+  }
+}
+
+async function requestGeminiStudyNotes(extraContext, video) {
+  const videoUrl = video?.url || (video?.videoId ? `https://www.youtube.com/watch?v=${video.videoId}` : '')
+  if (!videoUrl) throw new Error('Vídeo sem URL para análise.')
+
+  const response = await fetch(GEMINI_NOTES_ENDPOINT, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      videoUrl,
+      extraContext,
+      video: {
+        title: video?.title || 'Vídeo salvo',
+        type: video?.type || 'videoaula',
+      },
+      context: {
+        materia: topicoMateria.nome,
+        conteudo: conteudo.nome,
+        topico: getTopicoTitulo(),
+        habilidade: habilidade.id,
+      },
+    }),
+  })
+
+  if (!response.ok) {
+    const errorPayload = await response.json().catch(() => null)
+    const fallback = response.status === 404
+      ? 'Endpoint de IA não encontrado. Configure e publique a Firebase Function generateVideoNotes.'
+      : `Servidor respondeu ${response.status}.`
+    throw new Error(errorPayload?.error || fallback)
+  }
+
+  return response.json()
+}
+
+function createAiNoteBlocks(aiNotes, video) {
+  const source = video ? {
+    type: 'video',
+    videoId: video.id,
+    youtubeId: video.videoId,
+    videoTitle: video.title || 'Vídeo salvo',
+  } : null
+
+  const specs = [
+    ['resumo', 'Resumo IA do vídeo', normalizeParagraph(aiNotes.resumo)],
+    ['ideia', 'Ideia central do conteúdo', normalizeParagraph(aiNotes.ideiaCentral)],
+    ['formula', 'Fórmulas e regras principais', listToBullets(aiNotes.formulasOuRegras)],
+    ['duvida', 'Dúvidas que podem surgir', listToBullets(aiNotes.duvidasProvaveis)],
+    ['erro', 'Erros comuns', listToBullets(aiNotes.errosComuns)],
+    ['exemplo', 'Exemplos importantes', listToBullets(aiNotes.exemplos)],
+    ['atencao', 'Pontos de atenção', listToBullets(aiNotes.pontosDeAtencao)],
+    ['enem', 'Como cai no ENEM', normalizeParagraph(aiNotes.comoCaiNoEnem)],
+  ]
+
+  return specs
+    .filter(([, , content]) => content && content.trim())
+    .map(([type, title, content]) => ({
+      id: createNoteBlockId(),
+      type,
+      title,
+      content,
+      source,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }))
+}
+
+function normalizeParagraph(value) {
+  if (Array.isArray(value)) return listToBullets(value)
+  return String(value || '').trim()
+}
+
+function listToBullets(items) {
+  if (!Array.isArray(items)) return normalizeParagraph(items)
+  return items
+    .map(item => String(item || '').trim())
+    .filter(Boolean)
+    .map(item => `- ${item}`)
+    .join('\n')
 }
 
 function formatVideoType(type) {

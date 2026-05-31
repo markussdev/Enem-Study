@@ -1,6 +1,15 @@
 {
   "hosting": {
     "public": ".",
+    "rewrites": [
+      {
+        "source": "/api/generate-video-notes",
+        "function": {
+          "functionId": "generateVideoNotes",
+          "region": "us-central1"
+        }
+      }
+    ],
     "ignore": [
       "firebase.json",
       "**/.*",
@@ -13,5 +22,8 @@
       "*.zip",
       "*.log"
     ]
+  },
+  "functions": {
+    "source": "functions"
   }
 }
